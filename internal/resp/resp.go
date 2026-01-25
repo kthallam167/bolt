@@ -19,3 +19,14 @@ var ErrProtocol = errors.New("resp: protocol error")
 // malicious or buggy client can't force an unbounded allocation.
 const maxBulkLen = 512 * 1024 * 1024 // 512MB, matches Redis's default proto-max-bulk-len
 
+func readLine(r *bufio.Reader) (string, error) {
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	if len(line) < 2 || line[len(line)-2] != '\r' {
+		return "", ErrProtocol
+	}
+	return line[:len(line)-2], nil
+}
+
