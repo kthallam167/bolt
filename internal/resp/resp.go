@@ -30,3 +30,44 @@ func readLine(r *bufio.Reader) (string, error) {
 	return line[:len(line)-2], nil
 }
 
+// ReadCommand reads one client request: either a RESP array of bulk strings
+// (the format every real client, including redis-cli, sends) or a single
+// inline line (space-separated, for plain `nc`/`telnet` debugging). It
+// returns a nil/empty slice for a blank line, which callers should skip.
+func ReadCommand(r *bufio.Reader) ([]string, error) {
+	line, err := readLine(r)
+	if err != nil {
+		return nil, err
+	}
+	if line == "" {
+		return nil, nil
+	}
+	if line[0] != '*' {
+		return strings.Fields(line), nil
+	}
+	n, err := strconv.Atoi(line[1:])
+	if err != nil || n < 0 || n > 1<<20 {
+		return nil, ErrProtocol
+	}
+	args := make([]string, n)
+	for i := 0; i < n; i++ {
+		typeLine, err := readLine(r)
+		if err != nil {
+			return nil, err
+		}
+		if len(typeLine) == 0 || typeLine[0] != '$' {
+			return nil, ErrProtocol
+		}
+		length, err := strconv.Atoi(typeLine[1:])
+		if err != nil || length < 0 || length > maxBulkLen {
+			return nil, ErrProtocol
+		}
+		buf := make([]byte, length+2)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, err
+		}
+		args[i] = string(buf[:length])
+	}
+	return args, nil
+}
+
