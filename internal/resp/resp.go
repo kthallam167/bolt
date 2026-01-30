@@ -71,3 +71,21 @@ func ReadCommand(r *bufio.Reader) ([]string, error) {
 	return args, nil
 }
 
+// EncodeCommand encodes args as a RESP array of bulk strings. It is used
+// both to frame outgoing client requests (bolt-cli, bolt-bench) and to
+// serialize commands into the append-only file.
+func EncodeCommand(args []string) []byte {
+	var buf bytes.Buffer
+	buf.WriteByte('*')
+	buf.WriteString(strconv.Itoa(len(args)))
+	buf.WriteString("\r\n")
+	for _, a := range args {
+		buf.WriteByte('$')
+		buf.WriteString(strconv.Itoa(len(a)))
+		buf.WriteString("\r\n")
+		buf.WriteString(a)
+		buf.WriteString("\r\n")
+	}
+	return buf.Bytes()
+}
+
