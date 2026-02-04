@@ -89,3 +89,56 @@ func EncodeCommand(args []string) []byte {
 	return buf.Bytes()
 }
 
+// ReadReply parses a single server reply into a Go value: string (simple
+// string / bulk string), int64 (integer), error (error reply), []interface{}
+// (array), or nil (nil bulk/array). It is used by bolt-cli and bolt-bench.
+func ReadReply(r *bufio.Reader) (interface{}, error) {
+	line, err := readLine(r)
+	if err != nil {
+		return nil, err
+	}
+	if line == "" {
+		return nil, ErrProtocol
+	}
+	switch line[0] {
+	case '+':
+		return line[1:], nil
+	case '-':
+		return nil, errors.New(line[1:])
+	case ':':
+		return strconv.ParseInt(line[1:], 10, 64)
+	case '$':
+		n, err := strconv.Atoi(line[1:])
+		if err != nil {
+			return nil, ErrProtocol
+		}
+		if n == -1 {
+			return nil, nil
+		}
+		buf := make([]byte, n+2)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, err
+		}
+		return string(buf[:n]), nil
+	case '*':
+		n, err := strconv.Atoi(line[1:])
+		if err != nil {
+			return nil, ErrProtocol
+		}
+		if n == -1 {
+			return nil, nil
+		}
+		arr := make([]interface{}, n)
+		for i := 0; i < n; i++ {
+			v, err := ReadReply(r)
+			if err != nil {
+				return nil, err
+			}
+			arr[i] = v
+		}
+		return arr, nil
+	default:
+		return nil, ErrProtocol
+	}
+}
+
