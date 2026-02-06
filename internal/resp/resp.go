@@ -142,3 +142,27 @@ func ReadReply(r *bufio.Reader) (interface{}, error) {
 	}
 }
 
+// WriteSimpleString writes a "+OK\r\n" style reply.
+func WriteSimpleString(w *bufio.Writer, s string) error {
+	if _, err := w.WriteString("+" + s + "\r\n"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// WriteError writes a "-ERR ...\r\n" style reply.
+func WriteError(w *bufio.Writer, s string) error {
+	if _, err := w.WriteString("-" + s + "\r\n"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// WriteInteger writes a ":123\r\n" style reply.
+func WriteInteger(w *bufio.Writer, n int64) error {
+	if _, err := w.WriteString(":" + strconv.FormatInt(n, 10) + "\r\n"); err != nil {
+		return err
+	}
+	return nil
+}
+
