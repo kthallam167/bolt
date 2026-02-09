@@ -166,3 +166,52 @@ func WriteInteger(w *bufio.Writer, n int64) error {
 	return nil
 }
 
+// WriteBulkString writes a "$3\r\nfoo\r\n" style reply.
+func WriteBulkString(w *bufio.Writer, s string) error {
+	if err := w.WriteByte('$'); err != nil {
+		return err
+	}
+	if _, err := w.WriteString(strconv.Itoa(len(s))); err != nil {
+		return err
+	}
+	if _, err := w.WriteString("\r\n"); err != nil {
+		return err
+	}
+	if _, err := w.WriteString(s); err != nil {
+		return err
+	}
+	_, err := w.WriteString("\r\n")
+	return err
+}
+
+// WriteNilBulk writes the RESP2 nil bulk string ("$-1\r\n"), used for GET
+// misses.
+func WriteNilBulk(w *bufio.Writer) error {
+	_, err := w.WriteString("$-1\r\n")
+	return err
+}
+
+// WriteNilArray writes the RESP2 nil array ("*-1\r\n").
+func WriteNilArray(w *bufio.Writer) error {
+	_, err := w.WriteString("*-1\r\n")
+	return err
+}
+
+// WriteArray writes items as a RESP array of bulk strings.
+func WriteArray(w *bufio.Writer, items []string) error {
+	if err := w.WriteByte('*'); err != nil {
+		return err
+	}
+	if _, err := w.WriteString(strconv.Itoa(len(items))); err != nil {
+		return err
+	}
+	if _, err := w.WriteString("\r\n"); err != nil {
+		return err
+	}
+	for _, it := range items {
+		if err := WriteBulkString(w, it); err != nil {
+			return err
+		}
+	}
+	return nil
+}
