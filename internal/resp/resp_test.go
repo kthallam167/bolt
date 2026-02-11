@@ -70,3 +70,73 @@ func TestReadCommandMalformed(t *testing.T) {
 	}
 }
 
+func TestWriteAndReadReplies(t *testing.T) {
+	var buf bytes.Buffer
+	w := bufio.NewWriter(&buf)
+
+	if err := WriteSimpleString(w, "OK"); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteError(w, "ERR boom"); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteInteger(w, 42); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteBulkString(w, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteNilBulk(w); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteArray(w, []string{"a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	r := bufio.NewReader(&buf)
+
+	v, err := ReadReply(r)
+	if err != nil || v != "OK" {
+		t.Fatalf("simple string: got %v, %v", v, err)
+	}
+
+	_, err = ReadReply(r)
+	if err == nil || err.Error() != "ERR boom" {
+		t.Fatalf("error reply: got %v", err)
+	}
+
+	v, err = ReadReply(r)
+	if err != nil || v != int64(42) {
+		t.Fatalf("integer: got %v, %v", v, err)
+	}
+
+	v, err = ReadReply(r)
+	if err != nil || v != "hello" {
+		t.Fatalf("bulk string: got %v, %v", v, err)
+	}
+
+	v, err = ReadReply(r)
+	if err != nil || v != nil {
+		t.Fatalf("nil bulk: got %v, %v", v, err)
+	}
+
+	v, err = ReadReply(r)
+	if err != nil {
+		t.Fatalf("array: %v", err)
+	}
+	arr, ok := v.([]interface{})
+	if !ok || len(arr) != 2 || arr[0] != "a" || arr[1] != "b" {
+		t.Fatalf("array reply mismatch: %v", arr)
+	}
+}
+
+func TestReadCommandOversizedArrayRejected(t *testing.T) {
+	r := bufio.NewReader(bytes.NewReader([]byte("*99999999\r\n")))
+	_, err := ReadCommand(r)
+	if err != ErrProtocol {
+		t.Fatalf("expected ErrProtocol for oversized array, got %v", err)
+	}
+}
