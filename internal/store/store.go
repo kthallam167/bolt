@@ -60,3 +60,48 @@ func (s *Store) shardFor(key string) *shard {
 	return s.shards[h.Sum32()&s.mask]
 }
 
+// Set stores value under key. If ttl > 0 the key expires ttl from now; ttl
+// <= 0 means no expiry.
+func (s *Store) Set(key string, value []byte, ttl time.Duration) {
+	var exp int64
+	if ttl > 0 {
+		exp = time.Now().Add(ttl).UnixNano()
+	}
+	s.SetAbsExpiry(key, value, exp)
+}
+
+// SetAbsExpiry is Set but with an absolute unix-nanosecond expiry instead
+// of a relative TTL (0 = no expiry). Both live PXAT requests and AOF
+// replay go through this, which is why a key still expires at the right
+// wall-clock instant no matter how long ago the command was logged.
+func (s *Store) SetAbsExpiry(key string, value []byte, expiresAtUnixNano int64) {
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	sh.data[key] = entry{value: value, expiresAt: expiresAtUnixNano}
+	sh.mu.Unlock()
+}
+
+// Get returns the value for key and whether it was found (and not expired).
+// Expired keys are lazily removed on access.
+func (s *Store) Get(key string) ([]byte, bool) {
+	sh := s.shardFor(key)
+	now := time.Now().UnixNano()
+
+	sh.mu.RLock()
+	e, ok := sh.data[key]
+	sh.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	if !e.expired(now) {
+		return e.value, true
+	}
+
+	sh.mu.Lock()
+	if e2, ok := sh.data[key]; ok && e2.expired(time.Now().UnixNano()) {
+		delete(sh.data, key)
+	}
+	sh.mu.Unlock()
+	return nil, false
+}
+
