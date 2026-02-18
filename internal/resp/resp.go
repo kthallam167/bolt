@@ -1,0 +1,217 @@
+// Package resp implements enough of the Redis RESP2 wire protocol to serve
+// real Redis clients (including redis-cli) and to encode the append-only
+// file log using the same framing.
+package resp
+
+import (
+	"bufio"
+	"bytes"
+	"errors"
+	"io"
+	"strconv"
+	"strings"
+)
+
+// ErrProtocol is returned when malformed RESP framing is encountered.
+var ErrProtocol = errors.New("resp: protocol error")
+
+// maxBulkLen bounds bulk string / array sizes accepted from the wire so a
+// malicious or buggy client can't force an unbounded allocation.
+const maxBulkLen = 512 * 1024 * 1024 // 512MB, matches Redis's default proto-max-bulk-len
+
+func readLine(r *bufio.Reader) (string, error) {
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	if len(line) < 2 || line[len(line)-2] != '\r' {
+		return "", ErrProtocol
+	}
+	return line[:len(line)-2], nil
+}
+
+// ReadCommand reads one client request: either a RESP array of bulk strings
+// (the format every real client, including redis-cli, sends) or a single
+// inline line (space-separated, for plain `nc`/`telnet` debugging). It
+// returns a nil/empty slice for a blank line, which callers should skip.
+func ReadCommand(r *bufio.Reader) ([]string, error) {
+	line, err := readLine(r)
+	if err != nil {
+		return nil, err
+	}
+	if line == "" {
+		return nil, nil
+	}
+	if line[0] != '*' {
+		return strings.Fields(line), nil
+	}
+	n, err := strconv.Atoi(line[1:])
+	if err != nil || n < 0 || n > 1<<20 {
+		return nil, ErrProtocol
+	}
+	args := make([]string, n)
+	for i := 0; i < n; i++ {
+		typeLine, err := readLine(r)
+		if err != nil {
+			return nil, err
+		}
+		if len(typeLine) == 0 || typeLine[0] != '$' {
+			return nil, ErrProtocol
+		}
+		length, err := strconv.Atoi(typeLine[1:])
+		if err != nil || length < 0 || length > maxBulkLen {
+			return nil, ErrProtocol
+		}
+		buf := make([]byte, length+2)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, err
+		}
+		args[i] = string(buf[:length])
+	}
+	return args, nil
+}
+
+// EncodeCommand encodes args as a RESP array of bulk strings. It is used
+// both to frame outgoing client requests (bolt-cli, bolt-bench) and to
+// serialize commands into the append-only file.
+func EncodeCommand(args []string) []byte {
+	var buf bytes.Buffer
+	buf.WriteByte('*')
+	buf.WriteString(strconv.Itoa(len(args)))
+	buf.WriteString("\r\n")
+	for _, a := range args {
+		buf.WriteByte('$')
+		buf.WriteString(strconv.Itoa(len(a)))
+		buf.WriteString("\r\n")
+		buf.WriteString(a)
+		buf.WriteString("\r\n")
+	}
+	return buf.Bytes()
+}
+
+// ReadReply parses a single server reply into a Go value: string (simple
+// string / bulk string), int64 (integer), error (error reply), []interface{}
+// (array), or nil (nil bulk/array). It is used by bolt-cli and bolt-bench.
+func ReadReply(r *bufio.Reader) (interface{}, error) {
+	line, err := readLine(r)
+	if err != nil {
+		return nil, err
+	}
+	if line == "" {
+		return nil, ErrProtocol
+	}
+	switch line[0] {
+	case '+':
+		return line[1:], nil
+	case '-':
+		return nil, errors.New(line[1:])
+	case ':':
+		return strconv.ParseInt(line[1:], 10, 64)
+	case '$':
+		n, err := strconv.Atoi(line[1:])
+		if err != nil {
+			return nil, ErrProtocol
+		}
+		if n == -1 {
+			return nil, nil
+		}
+		buf := make([]byte, n+2)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, err
+		}
+		return string(buf[:n]), nil
+	case '*':
+		n, err := strconv.Atoi(line[1:])
+		if err != nil {
+			return nil, ErrProtocol
+		}
+		if n == -1 {
+			return nil, nil
+		}
+		arr := make([]interface{}, n)
+		for i := 0; i < n; i++ {
+			v, err := ReadReply(r)
+			if err != nil {
+				return nil, err
+			}
+			arr[i] = v
+		}
+		return arr, nil
+	default:
+		return nil, ErrProtocol
+	}
+}
+
+// WriteSimpleString writes a "+OK\r\n" style reply.
+func WriteSimpleString(w *bufio.Writer, s string) error {
+	if _, err := w.WriteString("+" + s + "\r\n"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// WriteError writes a "-ERR ...\r\n" style reply.
+func WriteError(w *bufio.Writer, s string) error {
+	if _, err := w.WriteString("-" + s + "\r\n"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// WriteInteger writes a ":123\r\n" style reply.
+func WriteInteger(w *bufio.Writer, n int64) error {
+	if _, err := w.WriteString(":" + strconv.FormatInt(n, 10) + "\r\n"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// WriteBulkString writes a "$3\r\nfoo\r\n" style reply.
+func WriteBulkString(w *bufio.Writer, s string) error {
+	if err := w.WriteByte('$'); err != nil {
+		return err
+	}
+	if _, err := w.WriteString(strconv.Itoa(len(s))); err != nil {
+		return err
+	}
+	if _, err := w.WriteString("\r\n"); err != nil {
+		return err
+	}
+	if _, err := w.WriteString(s); err != nil {
+		return err
+	}
+	_, err := w.WriteString("\r\n")
+	return err
+}
+
+// WriteNilBulk writes the RESP2 nil bulk string ("$-1\r\n"), used for GET
+// misses.
+func WriteNilBulk(w *bufio.Writer) error {
+	_, err := w.WriteString("$-1\r\n")
+	return err
+}
+
+// WriteNilArray writes the RESP2 nil array ("*-1\r\n").
+func WriteNilArray(w *bufio.Writer) error {
+	_, err := w.WriteString("*-1\r\n")
+	return err
+}
+
+// WriteArray writes items as a RESP array of bulk strings.
+func WriteArray(w *bufio.Writer, items []string) error {
+	if err := w.WriteByte('*'); err != nil {
+		return err
+	}
+	if _, err := w.WriteString(strconv.Itoa(len(items))); err != nil {
+		return err
+	}
+	if _, err := w.WriteString("\r\n"); err != nil {
+		return err
+	}
+	for _, it := range items {
+		if err := WriteBulkString(w, it); err != nil {
+			return err
+		}
+	}
+	return nil
+}
