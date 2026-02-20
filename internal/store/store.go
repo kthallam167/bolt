@@ -105,3 +105,26 @@ func (s *Store) Get(key string) ([]byte, bool) {
 	return nil, false
 }
 
+// Exists reports whether key is present and not expired.
+func (s *Store) Exists(key string) bool {
+	_, ok := s.Get(key)
+	return ok
+}
+
+// Del removes the given keys and returns how many were actually present.
+func (s *Store) Del(keys ...string) int {
+	n := 0
+	now := time.Now().UnixNano()
+	for _, key := range keys {
+		sh := s.shardFor(key)
+		sh.mu.Lock()
+		if e, ok := sh.data[key]; ok {
+			delete(sh.data, key)
+			if !e.expired(now) {
+				n++
+			}
+		}
+		sh.mu.Unlock()
+	}
+	return n
+}
