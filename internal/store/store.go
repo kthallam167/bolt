@@ -128,3 +128,13 @@ func (s *Store) Del(keys ...string) int {
 	}
 	return n
 }
+
+// Expire sets key to expire after ttl from now. It returns false if the key
+// does not exist (or is already expired).
+func (s *Store) Expire(key string, ttl time.Duration) bool {
+	return s.ExpireAt(key, time.Now().Add(ttl).UnixNano())
+}
+
+// ExpireAt sets key's absolute expiry to expiresAtUnixNano. It returns
+// false if the key does not exist (or is already expired).
+func (s *Store) ExpireAt(key string, expiresAtUnixNano int64) bool {
