@@ -138,3 +138,16 @@ func (s *Store) Expire(key string, ttl time.Duration) bool {
 // ExpireAt sets key's absolute expiry to expiresAtUnixNano. It returns
 // false if the key does not exist (or is already expired).
 func (s *Store) ExpireAt(key string, expiresAtUnixNano int64) bool {
+	sh := s.shardFor(key)
+	now := time.Now().UnixNano()
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	e, ok := sh.data[key]
+	if !ok || e.expired(now) {
+		return false
+	}
+	e.expiresAt = expiresAtUnixNano
+	sh.data[key] = e
+	return true
+}
+
