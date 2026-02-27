@@ -151,3 +151,21 @@ func (s *Store) ExpireAt(key string, expiresAtUnixNano int64) bool {
 	return true
 }
 
+// TTL reports the remaining time-to-live for key. exists is false if the
+// key is absent or expired. hasExpiry is false if the key exists but never
+// expires, in which case ttl is meaningless.
+func (s *Store) TTL(key string) (ttl time.Duration, exists bool, hasExpiry bool) {
+	sh := s.shardFor(key)
+	now := time.Now().UnixNano()
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	e, ok := sh.data[key]
+	if !ok || e.expired(now) {
+		return 0, false, false
+	}
+	if e.expiresAt == 0 {
+		return 0, true, false
+	}
+	return time.Duration(e.expiresAt - now), true, true
+}
+
