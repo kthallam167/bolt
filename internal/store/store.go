@@ -169,3 +169,116 @@ func (s *Store) TTL(key string) (ttl time.Duration, exists bool, hasExpiry bool)
 	return time.Duration(e.expiresAt - now), true, true
 }
 
+// FlushAll removes every key from the store.
+func (s *Store) FlushAll() {
+	for _, sh := range s.shards {
+		sh.mu.Lock()
+		sh.data = make(map[string]entry)
+		sh.mu.Unlock()
+	}
+}
+
+// Len returns the total number of keys in the store, including any that
+// have expired but have not yet been swept. This matches Redis's DBSIZE
+// semantics.
+func (s *Store) Len() int {
+	n := 0
+	for _, sh := range s.shards {
+		sh.mu.RLock()
+		n += len(sh.data)
+		sh.mu.RUnlock()
+	}
+	return n
+}
+
+// Keys returns all non-expired keys matching the given shell glob pattern
+// (see path.Match). It is O(N) and, like Redis's KEYS, intended for
+// debugging rather than hot-path use.
+func (s *Store) Keys(pattern string) []string {
+	now := time.Now().UnixNano()
+	var out []string
+	for _, sh := range s.shards {
+		sh.mu.RLock()
+		for k, e := range sh.data {
+			if e.expired(now) {
+				continue
+			}
+			if ok, _ := path.Match(pattern, k); ok {
+				out = append(out, k)
+			}
+		}
+		sh.mu.RUnlock()
+	}
+	return out
+}
+
+// ForEach calls fn for every non-expired key, one shard at a time — it only
+// holds a shard's read lock while iterating that shard, so a full scan
+// (AOF rewrite uses this) doesn't stall the rest of the store. Stops early
+// if fn returns false.
+func (s *Store) ForEach(fn func(key string, value []byte, expiresAtUnixNano int64) bool) {
+	now := time.Now().UnixNano()
+	for _, sh := range s.shards {
+		sh.mu.RLock()
+		cont := true
+		for k, e := range sh.data {
+			if e.expired(now) {
+				continue
+			}
+			if !fn(k, e.value, e.expiresAt) {
+				cont = false
+				break
+			}
+		}
+		sh.mu.RUnlock()
+		if !cont {
+			return
+		}
+	}
+}
+
+// activeExpireSampleSize is how many keys are sampled per shard on each
+// active-expiry pass.
+const activeExpireSampleSize = 20
+
+// ActiveExpireCycle samples a bounded number of keys per shard and evicts
+// whichever have expired, returning the count. This is the other half of
+// TTL handling — Get/Exists/TTL expire keys lazily on access, but a key
+// nobody ever reads again would otherwise just sit there forever. Same
+// sampling idea Redis uses: cheap, bounded, good enough.
+func (s *Store) ActiveExpireCycle() int {
+	now := time.Now().UnixNano()
+	evicted := 0
+	for _, sh := range s.shards {
+		sh.mu.Lock()
+		i := 0
+		for k, e := range sh.data {
+			if i >= activeExpireSampleSize {
+				break
+			}
+			i++
+			if e.expired(now) {
+				delete(sh.data, k)
+				evicted++
+			}
+		}
+		sh.mu.Unlock()
+	}
+	return evicted
+}
+
+// RunActiveExpiry runs ActiveExpireCycle on interval until stop is closed.
+// It is intended to be launched as a background goroutine by the server.
+func (s *Store) RunActiveExpiry(interval time.Duration, stop <-chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.ActiveExpireCycle()
+		case <-stop:
+			return
+		}
+	}
+}
+
