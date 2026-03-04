@@ -282,3 +282,7 @@ func (s *Store) RunActiveExpiry(interval time.Duration, stop <-chan struct{}) {
 	}
 }
 
+// ShardCount returns the number of shards the store was created with.
+func (s *Store) ShardCount() int {
+	return len(s.shards)
+}
