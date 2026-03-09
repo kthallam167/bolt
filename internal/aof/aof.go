@@ -63,3 +63,58 @@ func (p FsyncPolicy) String() string {
 // running.
 var ErrRewriteInProgress = errors.New("aof: rewrite already in progress")
 
+// AOF manages a single append-only log file: appending new commands,
+// fsyncing per its policy, and compacting the log via Rewrite.
+type AOF struct {
+	mu     sync.Mutex
+	path   string
+	file   *os.File
+	writer *bufio.Writer
+	policy FsyncPolicy
+
+	rewriting  bool
+	rewriteBuf [][]byte
+
+	stop chan struct{}
+	wg   sync.WaitGroup
+}
+
+// Open opens (creating if necessary) the AOF at path for appending, and
+// starts the background fsync goroutine if policy is FsyncEverySec.
+func Open(path string, policy FsyncPolicy) (*AOF, error) {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+	a := &AOF{
+		path:   path,
+		file:   f,
+		writer: bufio.NewWriterSize(f, 64*1024),
+		policy: policy,
+		stop:   make(chan struct{}),
+	}
+	if policy == FsyncEverySec {
+		a.wg.Add(1)
+		go a.fsyncLoop()
+	}
+	return a, nil
+}
+
+func (a *AOF) fsyncLoop() {
+	defer a.wg.Done()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			a.mu.Lock()
+			_ = a.writer.Flush()
+			_ = a.file.Sync()
+			a.mu.Unlock()
+		case <-a.stop:
+			return
+		}
+	}
+}
+
+// Append encodes args as a RESP command and writes it to the log, applying
