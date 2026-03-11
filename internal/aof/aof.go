@@ -118,3 +118,31 @@ func (a *AOF) fsyncLoop() {
 }
 
 // Append encodes args as a RESP command and writes it to the log, applying
+// the configured fsync policy. If a rewrite is in progress, the command is
+// also buffered in memory so Rewrite can replay it into the new log before
+// swapping files — this is what makes rewrite safe under concurrent writes.
+func (a *AOF) Append(args []string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	buf := resp.EncodeCommand(args)
+	if a.rewriting {
+		cp := make([]byte, len(buf))
+		copy(cp, buf)
+		a.rewriteBuf = append(a.rewriteBuf, cp)
+	}
+	if _, err := a.writer.Write(buf); err != nil {
+		return err
+	}
+	if a.policy == FsyncAlways {
+		if err := a.writer.Flush(); err != nil {
+			return err
+		}
+		return a.file.Sync()
+	}
+	// For everysec/no we still flush to the OS buffer so readers of the
+	// file (e.g. `Size`, or a rewrite dump running concurrently) see up to
+	// date bytes; only the fsync-to-disk call is deferred/skipped.
+	return a.writer.Flush()
+}
+
