@@ -146,3 +146,39 @@ func (a *AOF) Append(args []string) error {
 	return a.writer.Flush()
 }
 
+func Replay(path string, apply func(args []string) error) (int, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	r := bufio.NewReaderSize(f, 64*1024)
+	n := 0
+	for {
+		args, err := resp.ReadCommand(r)
+		if err != nil {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
+				break
+			}
+			// Any other framing error at end of file is treated as a
+			// truncated last write and tolerated; mid-file corruption
+			// still surfaces to the caller.
+			if errors.Is(err, resp.ErrProtocol) {
+				break
+			}
+			return n, err
+		}
+		if len(args) == 0 {
+			continue
+		}
+		if err := apply(args); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
