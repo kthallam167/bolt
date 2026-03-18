@@ -146,6 +146,45 @@ func (a *AOF) Append(args []string) error {
 	return a.writer.Flush()
 }
 
+// Size returns the current size in bytes of the on-disk AOF file.
+func (a *AOF) Size() (int64, error) {
+	fi, err := os.Stat(a.path)
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
+}
+
+// Rewrite compacts the log. dump gets a fresh buffered writer and should
+// write whatever minimal set of commands reconstructs the current dataset.
+// Anything appended while dump is running gets captured and replayed onto
+// the new file before it replaces the old one — see the comments below,
+// this is the one part of the package worth reading carefully. Returns
+// the size of the new file in bytes.
+func (a *AOF) Rewrite(dump func(w *bufio.Writer) error) (int64, error) {
+	a.mu.Lock()
+	if a.rewriting {
+		a.mu.Unlock()
+		return 0, ErrRewriteInProgress
+	}
+	a.rewriting = true
+	a.rewriteBuf = a.rewriteBuf[:0]
+	a.mu.Unlock()
+
+	tmpPath := a.path + ".rewrite.tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		a.mu.Lock()
+		a.rewriting = false
+		a.mu.Unlock()
+		return 0, err
+	}
+	w := bufio.NewWriterSize(f, 64*1024)
+
+	// This walk is the slow part on a big store, so it runs lock-free.
+	// Live Appends keep landing on the old file in the meantime and get
+	// mirrored into rewriteBuf below, so nothing gets dropped.
+	dumpErr := dump(w)
 func Replay(path string, apply func(args []string) error) (int, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
