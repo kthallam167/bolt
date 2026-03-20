@@ -185,6 +185,39 @@ func (a *AOF) Rewrite(dump func(w *bufio.Writer) error) (int64, error) {
 	// Live Appends keep landing on the old file in the meantime and get
 	// mirrored into rewriteBuf below, so nothing gets dropped.
 	dumpErr := dump(w)
+
+	// Everything past this point happens under the lock, on purpose: a
+	// write during the rewrite either lands in rewriteBuf before we read
+	// it, or it blocks here and lands straight in the new file once we've
+	// swapped a.file and cleared a.rewriting. No gap either way.
+	a.mu.Lock()
+	var finalErr error
+	if dumpErr != nil {
+		finalErr = dumpErr
+	} else {
+		for _, cmd := range a.rewriteBuf {
+			if _, err := w.Write(cmd); err != nil {
+				finalErr = err
+				break
+			}
+		}
+		if finalErr == nil {
+			finalErr = w.Flush()
+		}
+		if finalErr == nil {
+			finalErr = f.Sync()
+		}
+	}
+	f.Close()
+
+	if finalErr != nil {
+		os.Remove(tmpPath)
+		a.rewriting = false
+		a.rewriteBuf = nil
+		a.mu.Unlock()
+		return 0, finalErr
+	}
+
 func Replay(path string, apply func(args []string) error) (int, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
