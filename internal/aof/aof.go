@@ -218,6 +218,58 @@ func (a *AOF) Rewrite(dump func(w *bufio.Writer) error) (int64, error) {
 		return 0, finalErr
 	}
 
+	if err := os.Rename(tmpPath, a.path); err != nil {
+		a.rewriting = false
+		a.rewriteBuf = nil
+		a.mu.Unlock()
+		return 0, err
+	}
+
+	newFile, err := os.OpenFile(a.path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		a.rewriting = false
+		a.rewriteBuf = nil
+		a.mu.Unlock()
+		return 0, err
+	}
+
+	oldFile := a.file
+	a.file = newFile
+	a.writer = bufio.NewWriterSize(newFile, 64*1024)
+	a.rewriting = false
+	a.rewriteBuf = nil
+	a.mu.Unlock()
+
+	oldFile.Close()
+
+	fi, err := os.Stat(a.path)
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
+}
+
+// Close flushes, fsyncs, and closes the log, stopping the background fsync
+// goroutine if one is running.
+func (a *AOF) Close() error {
+	close(a.stop)
+	a.wg.Wait()
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.writer.Flush(); err != nil {
+		return err
+	}
+	if err := a.file.Sync(); err != nil {
+		return err
+	}
+	return a.file.Close()
+}
+
+// Replay feeds every command in the AOF at path through apply, in order.
+// A missing file just means an empty log — not an error. If the last
+// command is truncated (process died mid-write), replay stops there
+// instead of failing the whole load; same idea as Redis's aof-load-truncated.
 func Replay(path string, apply func(args []string) error) (int, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
