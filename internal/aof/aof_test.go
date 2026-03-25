@@ -89,6 +89,110 @@ func TestReplayTruncatedTailTolerated(t *testing.T) {
 	}
 }
 
+func TestRewriteCompactsAndPreservesLatestState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rewrite.aof")
+	a, err := Open(path, FsyncAlways)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	// Write the same key many times so the log has a lot of redundancy for
+	// the rewrite to compact away.
+	for i := 0; i < 100; i++ {
+		if err := a.Append([]string{"SET", "counter", fmt.Sprintf("%d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sizeBefore, _ := a.Size()
+
+	newSize, err := a.Rewrite(func(w *bufio.Writer) error {
+		_, err := w.Write(resp.EncodeCommand([]string{"SET", "counter", "99"}))
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newSize >= sizeBefore {
+		t.Fatalf("expected rewrite to shrink the file: before=%d after=%d", sizeBefore, newSize)
+	}
+
+	final := map[string]string{}
+	_, err = Replay(path, func(args []string) error {
+		if args[0] == "SET" {
+			final[args[1]] = args[2]
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final["counter"] != "99" {
+		t.Fatalf("expected counter=99 after replay, got %v", final)
+	}
+}
+
+// TestRewriteConcurrentWritesNotLost is the key correctness test for the
+// rewrite/compaction path: commands appended while a rewrite's dump phase
+// is running must still show up after the rewrite finishes and the file is
+// swapped, even though the dump snapshot was taken before they arrived.
+func TestRewriteConcurrentWritesNotLost(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "concurrent.aof")
+	a, err := Open(path, FsyncAlways)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	if err := a.Append([]string{"SET", "base", "0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	const concurrentWrites = 200
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	newSize, err := a.Rewrite(func(w *bufio.Writer) error {
+		// Simulate a slow dump by firing concurrent Appends while this
+		// callback is running, before it returns.
+		go func() {
+			defer wg.Done()
+			for i := 0; i < concurrentWrites; i++ {
+				_ = a.Append([]string{"SET", fmt.Sprintf("live%d", i), "1"})
+			}
+		}()
+		wg.Wait()
+		_, err := w.Write(resp.EncodeCommand([]string{"SET", "base", "0"}))
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newSize == 0 {
+		t.Fatal("expected non-zero rewritten file size")
+	}
+
+	seen := map[string]bool{}
+	_, err = Replay(path, func(args []string) error {
+		if args[0] == "SET" {
+			seen[args[1]] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !seen["base"] {
+		t.Fatal("expected base key to survive rewrite")
+	}
+	for i := 0; i < concurrentWrites; i++ {
+		key := fmt.Sprintf("live%d", i)
+		if !seen[key] {
+			t.Fatalf("write %q made during rewrite dump was lost", key)
+		}
+	}
+}
+
 func TestParseFsyncPolicy(t *testing.T) {
 	cases := map[string]FsyncPolicy{
 		"always":   FsyncAlways,
