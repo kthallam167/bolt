@@ -83,4 +83,101 @@ func (s *Server) cmdEcho(w *bufio.Writer, args []string) {
 	resp.WriteBulkString(w, args[1])
 }
 
+// cmdSet implements SET key value [EX seconds | PX milliseconds | PXAT unix-ms].
+// PXAT isn't advertised in the README (Redis keeps it low-profile too) —
+// it's how bolt rewrites relative TTLs into absolute ones before they hit
+// the AOF, so replay re-expires at the right instant instead of restarting
+// the clock.
+func (s *Server) cmdSet(w *bufio.Writer, args []string, persist bool) {
+	if len(args) < 3 {
+		resp.WriteError(w, "ERR wrong number of arguments for 'set' command")
+		return
+	}
+	key, value := args[1], args[2]
+
+	var ttl time.Duration
+	var absExpiry int64
+	for i := 3; i < len(args); {
+		opt := normalizeCmd(args[i])
+		if i+1 >= len(args) {
+			resp.WriteError(w, "ERR syntax error")
+			return
+		}
+		n, err := strconv.ParseInt(args[i+1], 10, 64)
+		if err != nil {
+			resp.WriteError(w, "ERR value is not an integer or out of range")
+			return
+		}
+		switch opt {
+		case "EX":
+			ttl = time.Duration(n) * time.Second
+		case "PX":
+			ttl = time.Duration(n) * time.Millisecond
+		case "PXAT":
+			absExpiry = n * int64(time.Millisecond)
+		default:
+			resp.WriteError(w, "ERR syntax error")
+			return
+		}
+		i += 2
+	}
+
+	var aofArgs []string
+	switch {
+	case absExpiry != 0:
+		s.cfg.Store.SetAbsExpiry(key, []byte(value), absExpiry)
+		aofArgs = args
+	case ttl > 0:
+		abs := time.Now().Add(ttl).UnixNano()
+		s.cfg.Store.SetAbsExpiry(key, []byte(value), abs)
+		aofArgs = []string{"SET", key, value, "PXAT", strconv.FormatInt(abs/int64(time.Millisecond), 10)}
+	default:
+		s.cfg.Store.Set(key, []byte(value), 0)
+		aofArgs = []string{"SET", key, value}
+	}
+	if persist {
+		s.appendAOF(aofArgs)
+	}
+	resp.WriteSimpleString(w, "OK")
+}
+
+func (s *Server) cmdGet(w *bufio.Writer, args []string) {
+	if len(args) != 2 {
+		resp.WriteError(w, "ERR wrong number of arguments for 'get' command")
+		return
+	}
+	val, ok := s.cfg.Store.Get(args[1])
+	if !ok {
+		resp.WriteNilBulk(w)
+		return
+	}
+	resp.WriteBulkString(w, string(val))
+}
+
+func (s *Server) cmdDel(w *bufio.Writer, args []string, persist bool) {
+	if len(args) < 2 {
+		resp.WriteError(w, "ERR wrong number of arguments for 'del' command")
+		return
+	}
+	n := s.cfg.Store.Del(args[1:]...)
+	if persist && n > 0 {
+		s.appendAOF(args)
+	}
+	resp.WriteInteger(w, int64(n))
+}
+
+func (s *Server) cmdExists(w *bufio.Writer, args []string) {
+	if len(args) < 2 {
+		resp.WriteError(w, "ERR wrong number of arguments for 'exists' command")
+		return
+	}
+	n := 0
+	for _, k := range args[1:] {
+		if s.cfg.Store.Exists(k) {
+			n++
+		}
+	}
+	resp.WriteInteger(w, int64(n))
+}
+
 }
