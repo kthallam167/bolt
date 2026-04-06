@@ -180,4 +180,67 @@ func (s *Server) cmdExists(w *bufio.Writer, args []string) {
 	resp.WriteInteger(w, int64(n))
 }
 
+func (s *Server) cmdExpire(w *bufio.Writer, args []string, persist bool) {
+	if len(args) != 3 {
+		resp.WriteError(w, "ERR wrong number of arguments for 'expire' command")
+		return
+	}
+	secs, err := strconv.ParseInt(args[2], 10, 64)
+	if err != nil {
+		resp.WriteError(w, "ERR value is not an integer or out of range")
+		return
+	}
+	abs := time.Now().Add(time.Duration(secs) * time.Second).UnixNano()
+	if !s.cfg.Store.ExpireAt(args[1], abs) {
+		resp.WriteInteger(w, 0)
+		return
+	}
+	if persist {
+		s.appendAOF([]string{"PEXPIREAT", args[1], strconv.FormatInt(abs/int64(time.Millisecond), 10)})
+	}
+	resp.WriteInteger(w, 1)
+}
+
+func (s *Server) cmdPExpireAt(w *bufio.Writer, args []string, persist bool) {
+	if len(args) != 3 {
+		resp.WriteError(w, "ERR wrong number of arguments for 'pexpireat' command")
+		return
+	}
+	ms, err := strconv.ParseInt(args[2], 10, 64)
+	if err != nil {
+		resp.WriteError(w, "ERR value is not an integer or out of range")
+		return
+	}
+	abs := ms * int64(time.Millisecond)
+	if !s.cfg.Store.ExpireAt(args[1], abs) {
+		resp.WriteInteger(w, 0)
+		return
+	}
+	if persist {
+		s.appendAOF(args)
+	}
+	resp.WriteInteger(w, 1)
+}
+
+func (s *Server) cmdTTL(w *bufio.Writer, args []string, unit time.Duration) {
+	if len(args) != 2 {
+		resp.WriteError(w, "ERR wrong number of arguments for 'ttl' command")
+		return
+	}
+	ttl, exists, hasExpiry := s.cfg.Store.TTL(args[1])
+	switch {
+	case !exists:
+		resp.WriteInteger(w, -2)
+	case !hasExpiry:
+		resp.WriteInteger(w, -1)
+	default:
+		// Round up so a key with e.g. 900ms left reports TTL 1, not 0.
+		n := (ttl + unit - 1) / unit
+		if n < 0 {
+			n = 0
+		}
+		resp.WriteInteger(w, int64(n))
+	}
+}
+
 }
