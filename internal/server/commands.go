@@ -243,4 +243,20 @@ func (s *Server) cmdTTL(w *bufio.Writer, args []string, unit time.Duration) {
 	}
 }
 
+func (s *Server) cmdKeys(w *bufio.Writer, args []string) {
+	if len(args) != 2 {
+		resp.WriteError(w, "ERR wrong number of arguments for 'keys' command")
+		return
+	}
+	resp.WriteArray(w, s.cfg.Store.Keys(args[1]))
+}
+
+func (s *Server) cmdFlushAll(w *bufio.Writer, persist bool) {
+	s.cfg.Store.FlushAll()
+	if persist {
+		s.appendAOF([]string{"FLUSHALL"})
+	}
+	resp.WriteSimpleString(w, "OK")
+}
+
 }
