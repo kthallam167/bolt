@@ -259,4 +259,43 @@ func (s *Server) cmdFlushAll(w *bufio.Writer, persist bool) {
 	resp.WriteSimpleString(w, "OK")
 }
 
+func (s *Server) cmdBgRewriteAOF(w *bufio.Writer) {
+	s.mu.Lock()
+	a := s.aof
+	s.mu.Unlock()
+	if a == nil {
+		resp.WriteError(w, "ERR persistence is not enabled")
+		return
+	}
+	go s.triggerRewrite()
+	resp.WriteSimpleString(w, "Background append only file rewriting started")
 }
+
+func (s *Server) cmdInfo(w *bufio.Writer) {
+	s.mu.Lock()
+	a := s.aof
+	s.mu.Unlock()
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Server\r\n")
+	fmt.Fprintf(&b, "uptime_in_seconds:%d\r\n", int64(s.uptime().Seconds()))
+	fmt.Fprintf(&b, "go_version:%s\r\n", runtime.Version())
+	fmt.Fprintf(&b, "goroutines:%d\r\n", runtime.NumGoroutine())
+	fmt.Fprintf(&b, "\r\n# Clients\r\n")
+	fmt.Fprintf(&b, "connected_clients:%d\r\n", atomic.LoadInt64(&s.connCount))
+	fmt.Fprintf(&b, "\r\n# Stats\r\n")
+	fmt.Fprintf(&b, "total_commands_processed:%d\r\n", atomic.LoadInt64(&s.commandCount))
+	fmt.Fprintf(&b, "\r\n# Keyspace\r\n")
+	fmt.Fprintf(&b, "db0:keys=%d,shards=%d\r\n", s.cfg.Store.Len(), s.cfg.Store.ShardCount())
+	fmt.Fprintf(&b, "\r\n# Persistence\r\n")
+	if a == nil {
+		fmt.Fprintf(&b, "aof_enabled:0\r\n")
+	} else {
+		size, _ := a.Size()
+		fmt.Fprintf(&b, "aof_enabled:1\r\n")
+		fmt.Fprintf(&b, "aof_current_size:%d\r\n", size)
+		fmt.Fprintf(&b, "aof_base_size:%d\r\n", atomic.LoadInt64(&s.aofBaseSize))
+	}
+	resp.WriteBulkString(w, b.String())
+}
+
