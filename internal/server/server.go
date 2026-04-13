@@ -138,4 +138,19 @@ func (s *Server) handleConn(conn net.Conn) {
 	w := bufio.NewWriterSize(conn, 64*1024)
 
 	for {
-func (s *Server) dispatch(w *bufio.Writer, args []string, persist bool) {}
+func (s *Server) appendAOF(args []string) {
+	s.mu.Lock()
+	a := s.aof
+	s.mu.Unlock()
+	if a == nil {
+		return
+	}
+	if err := a.Append(args); err != nil {
+		s.cfg.Logger.Printf("aof append failed: %v", err)
+		return
+	}
+	s.maybeTriggerRewrite()
+}
+
+// normalizeCmd upper-cases a command name for dispatch matching.
+func normalizeCmd(s string) string { return strings.ToUpper(s) }
