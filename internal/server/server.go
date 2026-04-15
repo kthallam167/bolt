@@ -138,6 +138,32 @@ func (s *Server) handleConn(conn net.Conn) {
 	w := bufio.NewWriterSize(conn, 64*1024)
 
 	for {
+		args, err := resp.ReadCommand(r)
+		if err != nil {
+			return
+		}
+		if len(args) == 0 {
+			continue
+		}
+		atomic.AddInt64(&s.commandCount, 1)
+		s.dispatch(w, args, true)
+
+		// Only flush once the client has nothing more queued up to read
+		// right now. A pipelined batch gets buffered and flushed in one
+		// write() instead of paying a round trip per command — see the
+		// pipelining numbers in the README, it's a big multiplier.
+		if r.Buffered() == 0 {
+			if err := w.Flush(); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (s *Server) uptime() time.Duration {
+	return time.Since(s.startTime)
+}
+
 func (s *Server) appendAOF(args []string) {
 	s.mu.Lock()
 	a := s.aof
