@@ -299,3 +299,24 @@ func (s *Server) cmdInfo(w *bufio.Writer) {
 	resp.WriteBulkString(w, b.String())
 }
 
+// dumpAOF writes the minimal set of SET commands that reconstruct st's
+// current contents, used as the AOF rewrite/compaction target. Keys with a
+// TTL are dumped with an absolute PXAT expiry so the rewritten log still
+// expires them at the correct wall-clock instant.
+func dumpAOF(w *bufio.Writer, st *store.Store) error {
+	var outerErr error
+	st.ForEach(func(key string, value []byte, expiresAtUnixNano int64) bool {
+		var args []string
+		if expiresAtUnixNano != 0 {
+			args = []string{"SET", key, string(value), "PXAT", strconv.FormatInt(expiresAtUnixNano/int64(time.Millisecond), 10)}
+		} else {
+			args = []string{"SET", key, string(value)}
+		}
+		if _, err := w.Write(resp.EncodeCommand(args)); err != nil {
+			outerErr = err
+			return false
+		}
+		return true
+	})
+	return outerErr
+}

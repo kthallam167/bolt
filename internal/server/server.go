@@ -164,6 +164,47 @@ func (s *Server) uptime() time.Duration {
 	return time.Since(s.startTime)
 }
 
+func (s *Server) maybeTriggerRewrite() {
+	s.mu.Lock()
+	a := s.aof
+	s.mu.Unlock()
+	if a == nil || s.cfg.AOFRewritePercentage <= 0 {
+		return
+	}
+	size, err := a.Size()
+	if err != nil {
+		return
+	}
+	if size < s.cfg.AOFRewriteMinSize {
+		return
+	}
+	base := atomic.LoadInt64(&s.aofBaseSize)
+	growth := size - base
+	if base <= 0 || growth*100 >= base*int64(s.cfg.AOFRewritePercentage) {
+		go s.triggerRewrite()
+	}
+}
+
+func (s *Server) triggerRewrite() {
+	s.mu.Lock()
+	a := s.aof
+	s.mu.Unlock()
+	if a == nil {
+		return
+	}
+	newSize, err := a.Rewrite(func(w *bufio.Writer) error {
+		return dumpAOF(w, s.cfg.Store)
+	})
+	if err != nil {
+		if !isRewriteInProgress(err) {
+			s.cfg.Logger.Printf("aof rewrite failed: %v", err)
+		}
+		return
+	}
+	atomic.StoreInt64(&s.aofBaseSize, newSize)
+	s.cfg.Logger.Printf("aof rewrite complete: %d bytes", newSize)
+}
+
 func (s *Server) appendAOF(args []string) {
 	s.mu.Lock()
 	a := s.aof
