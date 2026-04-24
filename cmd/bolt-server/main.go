@@ -62,7 +62,16 @@ func main() {
 	go st.RunActiveExpiry(*activeExpiryInterval, stop)
 	defer close(stop)
 
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		logger.Printf("received %s, shutting down", sig)
+		srv.Shutdown()
+	}()
+
 	if err := srv.ListenAndServe(); err != nil {
 		logger.Fatal(err)
 	}
+	logger.Println("bolt stopped")
 }
