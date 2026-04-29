@@ -58,4 +58,42 @@ func main() {
 		}
 	}
 }
+
+func runOne(r *bufio.Reader, w *bufio.Writer, args []string) error {
+	if _, err := w.Write(resp.EncodeCommand(args)); err != nil {
+		return err
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	reply, err := resp.ReadReply(r)
+	if err != nil {
+		fmt.Println("(error)", err)
+		return nil
+	}
+	printReply(reply, 0)
+	return nil
+}
+
+func printReply(v interface{}, depth int) {
+	indent := strings.Repeat("  ", depth)
+	switch val := v.(type) {
+	case nil:
+		fmt.Println("(nil)")
+	case string:
+		fmt.Printf("%q\n", val)
+	case int64:
+		fmt.Printf("(integer) %d\n", val)
+	case []interface{}:
+		if len(val) == 0 {
+			fmt.Println("(empty array)")
+			return
+		}
+		for i, item := range val {
+			fmt.Printf("%s%d) ", indent, i+1)
+			printReply(item, depth+1)
+		}
+	default:
+		fmt.Printf("%v\n", val)
+	}
 }
