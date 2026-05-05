@@ -69,7 +69,14 @@ func main() {
 	opsPerSec := float64(completed) / elapsed.Seconds()
 	fmt.Printf("\ncompleted %d ops in %s -> %.0f ops/sec\n", completed, elapsed, opsPerSec)
 
+	if len(latencies) > 0 {
+		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+		p50 := latencies[len(latencies)*50/100]
+		p99 := latencies[len(latencies)*99/100]
+		fmt.Printf("per-request latency (single-command round trips): p50=%s p99=%s\n", p50, p99)
+	}
 }
+
 type workerResult struct {
 	count     int
 	latencies []time.Duration // only populated when pipeline==1
