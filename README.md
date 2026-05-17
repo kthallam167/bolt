@@ -166,3 +166,36 @@ them all, then reads N replies) gets all N replies flushed in a single
 [Benchmarks](#benchmarks) for the measured effect.
 
 ## Commands
+
+| Command | Description |
+|---|---|
+| `PING [msg]` | Liveness check |
+| `ECHO msg` | Echo |
+| `SET key value [EX seconds \| PX ms]` | Set a key, optionally with a TTL |
+| `GET key` | Get a key |
+| `DEL key [key ...]` | Delete one or more keys |
+| `EXISTS key [key ...]` | Count how many of the given keys exist |
+| `EXPIRE key seconds` | Set a TTL on an existing key |
+| `PEXPIREAT key unix-ms` | Set an absolute expiry (also used internally by AOF replay) |
+| `TTL key` / `PTTL key` | Remaining TTL in seconds / milliseconds (`-1` no TTL, `-2` no key) |
+| `KEYS pattern` | List keys matching a glob pattern (`path.Match` syntax) — O(N), debugging only |
+| `DBSIZE` | Number of keys |
+| `FLUSHALL` | Remove all keys |
+| `BGREWRITEAOF` | Manually trigger AOF compaction |
+| `INFO` | Server/stats/persistence info |
+
+## Configuration
+
+`bolt-server` flags:
+
+| Flag | Default | Description |
+|---|---|---|
+| `-addr` | `:6380` | TCP listen address |
+| `-aof` | `bolt.aof` | AOF file path (empty disables persistence) |
+| `-aof-fsync` | `everysec` | `always` \| `everysec` \| `no` |
+| `-shards` | `32` | Store shard count (rounded up to a power of two) |
+| `-aof-rewrite-percentage` | `100` | Auto-rewrite once the log grows this % past its post-rewrite size (`0` disables) |
+| `-aof-rewrite-min-size` | `1048576` | Minimum AOF size (bytes) before auto-rewrite can trigger |
+| `-active-expiry-interval` | `100ms` | Interval between background TTL sweeps |
+
+## Benchmarks
