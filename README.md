@@ -273,3 +273,33 @@ make build
 ```
 
 ## Testing
+
+```sh
+make race     # go test -race -count=1 ./...
+```
+
+Covers: RESP encode/decode round trips and malformed-input handling; the
+sharded store under concurrent access (run with `-race`); AOF append/replay
+round trips, truncated-tail tolerance, and — the trickiest part — a test
+that fires concurrent writes *during* a rewrite's dump phase and asserts
+none of them are lost; and full TCP integration tests (`PING`/`SET`/`GET`/
+`DEL`/`EXPIRE`/`TTL`, pipelining, and that live writes over the wire are
+actually replayable from the AOF afterward).
+
+## Project layout
+
+```
+cmd/
+  bolt-server/   server binary
+  bolt-cli/      interactive RESP client
+  bolt-bench/    concurrent load generator
+internal/
+  resp/          RESP2 protocol encode/decode
+  store/         sharded, concurrent, TTL-aware key-value map
+  aof/           append-only-file persistence + rewrite/compaction
+  server/        TCP server, command dispatch, pipelining
+```
+
+## License
+
+[MIT](LICENSE)
