@@ -46,6 +46,11 @@ type Server struct {
 	connCount    int64 // atomic: currently connected clients
 	commandCount int64 // atomic: total commands processed
 
+	// replayW is a single reusable discard writer for AOF replay: replay is
+	// single-threaded, so one writer serves every replayed command instead of
+	// allocating a throwaway per command.
+	replayW *bufio.Writer
+
 	connWG sync.WaitGroup
 	quit   chan struct{}
 }
@@ -60,6 +65,7 @@ func New(cfg Config) *Server {
 		cfg:       cfg,
 		startTime: time.Now(),
 		quit:      make(chan struct{}),
+		replayW:   bufio.NewWriter(io.Discard),
 	}
 }
 
@@ -75,10 +81,10 @@ func (s *Server) SetAOF(a *aof.AOF, baseSize int64) {
 
 // ApplyReplay applies a single command from the AOF during startup replay:
 // it mutates the store exactly as a live command would, but never re-writes
-// to the AOF (that would duplicate the log) and discards any reply.
+// to the AOF (that would duplicate the log) and discards any reply. Replay is
+// single-threaded, so the reply goes to a single reused discard writer.
 func (s *Server) ApplyReplay(args []string) error {
-	w := bufio.NewWriter(io.Discard)
-	s.dispatch(w, args, false)
+	s.dispatch(s.replayW, args, false)
 	return nil
 }
 
@@ -171,10 +177,7 @@ func (s *Server) maybeTriggerRewrite() {
 	if a == nil || s.cfg.AOFRewritePercentage <= 0 {
 		return
 	}
-	size, err := a.Size()
-	if err != nil {
-		return
-	}
+	size := a.LoggedSize()
 	if size < s.cfg.AOFRewriteMinSize {
 		return
 	}
@@ -205,18 +208,32 @@ func (s *Server) triggerRewrite() {
 	s.cfg.Logger.Printf("aof rewrite complete: %d bytes", newSize)
 }
 
-func (s *Server) appendAOF(args []string) {
+// applyWrite performs a store mutation and, when persistence is enabled, its
+// AOF append as a single atomic step, so the in-memory state and the log can't
+// be reordered relative to another concurrent writer. mutate makes the store
+// change and returns the command to persist plus whether it should be logged
+// at all. It returns an error only when the append itself fails, letting the
+// caller decline to acknowledge a write it could not durably log.
+//
+// Note: the store is mutated before the append inside the locked step, so a
+// failed append still leaves the mutation in memory — the reply becomes an
+// error rather than a silent OK, but a full rollback would require capturing
+// prior state and is out of scope here.
+func (s *Server) applyWrite(persist bool, mutate func() (logArgs []string, logIt bool)) error {
 	s.mu.Lock()
 	a := s.aof
 	s.mu.Unlock()
-	if a == nil {
-		return
+
+	if !persist || a == nil {
+		mutate()
+		return nil
 	}
-	if err := a.Append(args); err != nil {
+	if err := a.AppendAtomic(mutate); err != nil {
 		s.cfg.Logger.Printf("aof append failed: %v", err)
-		return
+		return err
 	}
 	s.maybeTriggerRewrite()
+	return nil
 }
 
 // normalizeCmd upper-cases a command name for dispatch matching.

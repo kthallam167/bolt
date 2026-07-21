@@ -202,7 +202,7 @@ them all, then reads N replies) gets all N replies flushed in a single
 
 Measured with `bolt-bench` (included, `cmd/bolt-bench`) and cross-checked
 against real `redis-benchmark`/`redis-server` on the **same machine**:
-Apple M4 Pro, macOS, Go 1.26, loopback TCP. Numbers are what this specific
+Apple M4 Pro, macOS, Go 1.22, loopback TCP. Numbers are what this specific
 laptop produces — the point isn't the absolute figures (any machine/network
 will differ) but the shape of the results and that they're honestly
 reproducible with the tools in this repo, not copy-pasted claims.

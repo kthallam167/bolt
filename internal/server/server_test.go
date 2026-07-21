@@ -2,8 +2,10 @@ package server
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -187,6 +189,69 @@ func TestUnknownCommand(t *testing.T) {
 	_, err := resp.ReadReply(r)
 	if err == nil {
 		t.Fatal("expected an error reply for an unknown command")
+	}
+}
+
+// TestConcurrentSameKeyWritesStayConsistentWithAOF guards the atomicity of a
+// store mutation and its AOF append: many connections hammer the SAME key
+// concurrently, and afterward the value in memory must equal the value the AOF
+// replays to. If the mutation and the append could be reordered relative to
+// another writer, the log's last write for the key could differ from the
+// store's — this asserts they never do. Run with -race.
+func TestConcurrentSameKeyWritesStayConsistentWithAOF(t *testing.T) {
+	addr, srv, aofPath := startTestServer(t, true)
+
+	const writers = 8
+	const each = 200
+
+	var wg sync.WaitGroup
+	for c := 0; c < writers; c++ {
+		wg.Add(1)
+		go func(c int) {
+			defer wg.Done()
+			conn, err := net.Dial("tcp", addr)
+			if err != nil {
+				t.Errorf("dial: %v", err)
+				return
+			}
+			defer conn.Close()
+			r := bufio.NewReader(conn)
+			w := bufio.NewWriter(conn)
+			for i := 0; i < each; i++ {
+				val := fmt.Sprintf("w%d-%d", c, i)
+				if _, err := w.Write(resp.EncodeCommand([]string{"SET", "k", val})); err != nil {
+					t.Errorf("write: %v", err)
+					return
+				}
+				if err := w.Flush(); err != nil {
+					t.Errorf("flush: %v", err)
+					return
+				}
+				if _, err := resp.ReadReply(r); err != nil {
+					t.Errorf("reply: %v", err)
+					return
+				}
+			}
+		}(c)
+	}
+	wg.Wait()
+
+	final, ok := srv.cfg.Store.Get("k")
+	if !ok {
+		t.Fatal("expected key to exist after the writes")
+	}
+
+	st2 := store.New(4)
+	srv2 := New(Config{Store: st2})
+	if _, err := aof.Replay(aofPath, srv2.ApplyReplay); err != nil {
+		t.Fatal(err)
+	}
+	replayed, ok := st2.Get("k")
+	if !ok {
+		t.Fatal("expected key to exist after replay")
+	}
+	if string(final) != string(replayed) {
+		t.Fatalf("memory and log diverged: store has %q, AOF replays to %q", final, replayed)
 	}
 }
 

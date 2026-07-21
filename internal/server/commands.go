@@ -122,21 +122,22 @@ func (s *Server) cmdSet(w *bufio.Writer, args []string, persist bool) {
 		i += 2
 	}
 
-	var aofArgs []string
-	switch {
-	case absExpiry != 0:
-		s.cfg.Store.SetAbsExpiry(key, []byte(value), absExpiry)
-		aofArgs = args
-	case ttl > 0:
-		abs := time.Now().Add(ttl).UnixNano()
-		s.cfg.Store.SetAbsExpiry(key, []byte(value), abs)
-		aofArgs = []string{"SET", key, value, "PXAT", strconv.FormatInt(abs/int64(time.Millisecond), 10)}
-	default:
-		s.cfg.Store.Set(key, []byte(value), 0)
-		aofArgs = []string{"SET", key, value}
-	}
-	if persist {
-		s.appendAOF(aofArgs)
+	if err := s.applyWrite(persist, func() ([]string, bool) {
+		switch {
+		case absExpiry != 0:
+			s.cfg.Store.SetAbsExpiry(key, []byte(value), absExpiry)
+			return args, true
+		case ttl > 0:
+			abs := time.Now().Add(ttl).UnixNano()
+			s.cfg.Store.SetAbsExpiry(key, []byte(value), abs)
+			return []string{"SET", key, value, "PXAT", strconv.FormatInt(abs/int64(time.Millisecond), 10)}, true
+		default:
+			s.cfg.Store.Set(key, []byte(value), 0)
+			return []string{"SET", key, value}, true
+		}
+	}); err != nil {
+		resp.WriteError(w, "ERR write not persisted")
+		return
 	}
 	resp.WriteSimpleString(w, "OK")
 }
@@ -159,9 +160,13 @@ func (s *Server) cmdDel(w *bufio.Writer, args []string, persist bool) {
 		resp.WriteError(w, "ERR wrong number of arguments for 'del' command")
 		return
 	}
-	n := s.cfg.Store.Del(args[1:]...)
-	if persist && n > 0 {
-		s.appendAOF(args)
+	var n int
+	if err := s.applyWrite(persist, func() ([]string, bool) {
+		n = s.cfg.Store.Del(args[1:]...)
+		return args, n > 0
+	}); err != nil {
+		resp.WriteError(w, "ERR write not persisted")
+		return
 	}
 	resp.WriteInteger(w, int64(n))
 }
@@ -190,13 +195,21 @@ func (s *Server) cmdExpire(w *bufio.Writer, args []string, persist bool) {
 		resp.WriteError(w, "ERR value is not an integer or out of range")
 		return
 	}
-	abs := time.Now().Add(time.Duration(secs) * time.Second).UnixNano()
-	if !s.cfg.Store.ExpireAt(args[1], abs) {
-		resp.WriteInteger(w, 0)
+	var existed bool
+	if err := s.applyWrite(persist, func() ([]string, bool) {
+		abs := time.Now().Add(time.Duration(secs) * time.Second).UnixNano()
+		existed = s.cfg.Store.ExpireAt(args[1], abs)
+		if !existed {
+			return nil, false
+		}
+		return []string{"PEXPIREAT", args[1], strconv.FormatInt(abs/int64(time.Millisecond), 10)}, true
+	}); err != nil {
+		resp.WriteError(w, "ERR write not persisted")
 		return
 	}
-	if persist {
-		s.appendAOF([]string{"PEXPIREAT", args[1], strconv.FormatInt(abs/int64(time.Millisecond), 10)})
+	if !existed {
+		resp.WriteInteger(w, 0)
+		return
 	}
 	resp.WriteInteger(w, 1)
 }
@@ -212,12 +225,17 @@ func (s *Server) cmdPExpireAt(w *bufio.Writer, args []string, persist bool) {
 		return
 	}
 	abs := ms * int64(time.Millisecond)
-	if !s.cfg.Store.ExpireAt(args[1], abs) {
-		resp.WriteInteger(w, 0)
+	var existed bool
+	if err := s.applyWrite(persist, func() ([]string, bool) {
+		existed = s.cfg.Store.ExpireAt(args[1], abs)
+		return args, existed
+	}); err != nil {
+		resp.WriteError(w, "ERR write not persisted")
 		return
 	}
-	if persist {
-		s.appendAOF(args)
+	if !existed {
+		resp.WriteInteger(w, 0)
+		return
 	}
 	resp.WriteInteger(w, 1)
 }
@@ -252,9 +270,12 @@ func (s *Server) cmdKeys(w *bufio.Writer, args []string) {
 }
 
 func (s *Server) cmdFlushAll(w *bufio.Writer, persist bool) {
-	s.cfg.Store.FlushAll()
-	if persist {
-		s.appendAOF([]string{"FLUSHALL"})
+	if err := s.applyWrite(persist, func() ([]string, bool) {
+		s.cfg.Store.FlushAll()
+		return []string{"FLUSHALL"}, true
+	}); err != nil {
+		resp.WriteError(w, "ERR write not persisted")
+		return
 	}
 	resp.WriteSimpleString(w, "OK")
 }

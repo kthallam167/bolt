@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kthallam167/bolt/internal/resp"
@@ -72,6 +73,10 @@ type AOF struct {
 	writer *bufio.Writer
 	policy FsyncPolicy
 
+	// size tracks the on-disk log size in bytes, updated as commands are
+	// appended so the write path can check growth without a stat(2) syscall.
+	size atomic.Int64
+
 	rewriting  bool
 	rewriteBuf [][]byte
 
@@ -92,6 +97,9 @@ func Open(path string, policy FsyncPolicy) (*AOF, error) {
 		writer: bufio.NewWriterSize(f, 64*1024),
 		policy: policy,
 		stop:   make(chan struct{}),
+	}
+	if fi, err := f.Stat(); err == nil {
+		a.size.Store(fi.Size())
 	}
 	if policy == FsyncEverySec {
 		a.wg.Add(1)
@@ -124,7 +132,13 @@ func (a *AOF) fsyncLoop() {
 func (a *AOF) Append(args []string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.appendLocked(args)
+}
 
+// appendLocked is the body of Append; the caller must already hold a.mu. It
+// exists so AppendAtomic can hold the lock across a caller-supplied mutation
+// and the append together.
+func (a *AOF) appendLocked(args []string) error {
 	buf := resp.EncodeCommand(args)
 	if a.rewriting {
 		cp := make([]byte, len(buf))
@@ -134,6 +148,7 @@ func (a *AOF) Append(args []string) error {
 	if _, err := a.writer.Write(buf); err != nil {
 		return err
 	}
+	a.size.Add(int64(len(buf)))
 	if a.policy == FsyncAlways {
 		if err := a.writer.Flush(); err != nil {
 			return err
@@ -141,9 +156,31 @@ func (a *AOF) Append(args []string) error {
 		return a.file.Sync()
 	}
 	// For everysec/no we still flush to the OS buffer so readers of the
-	// file (e.g. `Size`, or a rewrite dump running concurrently) see up to
-	// date bytes; only the fsync-to-disk call is deferred/skipped.
+	// file (e.g. a rewrite dump running concurrently) see up to date bytes;
+	// only the fsync-to-disk call is deferred/skipped.
 	return a.writer.Flush()
+}
+
+// AppendAtomic runs mutate while holding the AOF's lock, then appends the
+// command mutate returns (when logIt is true) under that same lock. Performing
+// the store mutation and its log record as one locked step keeps their order
+// identical for concurrent writers, so the in-memory state and the replayable
+// log cannot diverge for racing writes to the same key.
+func (a *AOF) AppendAtomic(mutate func() (args []string, logIt bool)) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	args, logIt := mutate()
+	if !logIt {
+		return nil
+	}
+	return a.appendLocked(args)
+}
+
+// LoggedSize returns the log's current size in bytes, tracked in memory as
+// commands are appended so the hot write path never needs a stat(2) syscall to
+// decide whether an automatic rewrite is due.
+func (a *AOF) LoggedSize() int64 {
+	return a.size.Load()
 }
 
 // Size returns the current size in bytes of the on-disk AOF file.
@@ -238,13 +275,20 @@ func (a *AOF) Rewrite(dump func(w *bufio.Writer) error) (int64, error) {
 	a.writer = bufio.NewWriterSize(newFile, 64*1024)
 	a.rewriting = false
 	a.rewriteBuf = nil
+
+	// Reset the in-memory size counter to the swapped-in file's size while
+	// still holding the lock, so a resuming Append can't race the store and
+	// leave the counter stale.
+	fi, statErr := newFile.Stat()
+	if statErr == nil {
+		a.size.Store(fi.Size())
+	}
 	a.mu.Unlock()
 
 	oldFile.Close()
 
-	fi, err := os.Stat(a.path)
-	if err != nil {
-		return 0, err
+	if statErr != nil {
+		return 0, statErr
 	}
 	return fi.Size(), nil
 }
