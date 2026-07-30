@@ -224,4 +224,3 @@ func TestAOFDoubleCloseSafe(t *testing.T) {
 		t.Fatalf("second Close failed: %v", err)
 	}
 }
-

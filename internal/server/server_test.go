@@ -241,4 +241,3 @@ func TestSetNonPositiveTTL(t *testing.T) {
 		t.Fatal("expected error reply for SET EX -5")
 	}
 }
-

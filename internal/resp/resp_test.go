@@ -149,4 +149,3 @@ func TestReadCommandMissingTrailingCRLF(t *testing.T) {
 		t.Fatalf("expected ErrProtocol for missing trailing CRLF, got %v", err)
 	}
 }
-
