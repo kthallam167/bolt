@@ -75,8 +75,9 @@ type AOF struct {
 	rewriting  bool
 	rewriteBuf [][]byte
 
-	stop chan struct{}
-	wg   sync.WaitGroup
+	stop   chan struct{}
+	closed bool
+	wg     sync.WaitGroup
 }
 
 // Open opens (creating if necessary) the AOF at path for appending, and
@@ -252,6 +253,14 @@ func (a *AOF) Rewrite(dump func(w *bufio.Writer) error) (int64, error) {
 // Close flushes, fsyncs, and closes the log, stopping the background fsync
 // goroutine if one is running.
 func (a *AOF) Close() error {
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return nil
+	}
+	a.closed = true
+	a.mu.Unlock()
+
 	close(a.stop)
 	a.wg.Wait()
 

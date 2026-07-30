@@ -209,3 +209,19 @@ func TestParseFsyncPolicy(t *testing.T) {
 		t.Fatal("expected error for unknown policy")
 	}
 }
+
+func TestAOFDoubleCloseSafe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "double_close.aof")
+	a, err := Open(path, FsyncEverySec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("first Close failed: %v", err)
+	}
+	// Second close should be safe and return nil without panic
+	if err := a.Close(); err != nil {
+		t.Fatalf("second Close failed: %v", err)
+	}
+}
+

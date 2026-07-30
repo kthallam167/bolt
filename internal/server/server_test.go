@@ -218,3 +218,27 @@ func TestWritesArePersistedAndReplayable(t *testing.T) {
 		t.Fatalf("expected b=2 after replay, got %q, %v", v, ok)
 	}
 }
+
+func TestSetNonPositiveTTL(t *testing.T) {
+	addr, _, _ := startTestServer(t, false)
+	r, w, _ := dial(t, addr)
+
+	if _, err := w.Write(resp.EncodeCommand([]string{"SET", "foo", "bar", "EX", "0"})); err != nil {
+		t.Fatal(err)
+	}
+	w.Flush()
+	_, err := resp.ReadReply(r)
+	if err == nil {
+		t.Fatal("expected error reply for SET EX 0")
+	}
+
+	if _, err := w.Write(resp.EncodeCommand([]string{"SET", "foo", "bar", "EX", "-5"})); err != nil {
+		t.Fatal(err)
+	}
+	w.Flush()
+	_, err = resp.ReadReply(r)
+	if err == nil {
+		t.Fatal("expected error reply for SET EX -5")
+	}
+}
+

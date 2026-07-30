@@ -144,6 +144,9 @@ func (s *Store) ExpireAt(key string, expiresAtUnixNano int64) bool {
 	defer sh.mu.Unlock()
 	e, ok := sh.data[key]
 	if !ok || e.expired(now) {
+		if ok && e.expired(now) {
+			delete(sh.data, key)
+		}
 		return false
 	}
 	e.expiresAt = expiresAtUnixNano

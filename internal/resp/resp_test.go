@@ -140,3 +140,13 @@ func TestReadCommandOversizedArrayRejected(t *testing.T) {
 		t.Fatalf("expected ErrProtocol for oversized array, got %v", err)
 	}
 }
+
+func TestReadCommandMissingTrailingCRLF(t *testing.T) {
+	// $3\r\nfooXX (instead of $3\r\nfoo\r\n)
+	r := bufio.NewReader(bytes.NewReader([]byte("*1\r\n$3\r\nfooXX")))
+	_, err := ReadCommand(r)
+	if err != ErrProtocol {
+		t.Fatalf("expected ErrProtocol for missing trailing CRLF, got %v", err)
+	}
+}
+

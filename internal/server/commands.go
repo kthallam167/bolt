@@ -110,10 +110,22 @@ func (s *Server) cmdSet(w *bufio.Writer, args []string, persist bool) {
 		}
 		switch opt {
 		case "EX":
+			if n <= 0 {
+				resp.WriteError(w, "ERR invalid expire time in 'set' command")
+				return
+			}
 			ttl = time.Duration(n) * time.Second
 		case "PX":
+			if n <= 0 {
+				resp.WriteError(w, "ERR invalid expire time in 'set' command")
+				return
+			}
 			ttl = time.Duration(n) * time.Millisecond
 		case "PXAT":
+			if n <= 0 {
+				resp.WriteError(w, "ERR invalid expire time in 'set' command")
+				return
+			}
 			absExpiry = n * int64(time.Millisecond)
 		default:
 			resp.WriteError(w, "ERR syntax error")

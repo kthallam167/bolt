@@ -66,6 +66,9 @@ func ReadCommand(r *bufio.Reader) ([]string, error) {
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
+		if buf[length] != '\r' || buf[length+1] != '\n' {
+			return nil, ErrProtocol
+		}
 		args[i] = string(buf[:length])
 	}
 	return args, nil
@@ -109,7 +112,7 @@ func ReadReply(r *bufio.Reader) (interface{}, error) {
 		return strconv.ParseInt(line[1:], 10, 64)
 	case '$':
 		n, err := strconv.Atoi(line[1:])
-		if err != nil {
+		if err != nil || n < -1 || n > maxBulkLen {
 			return nil, ErrProtocol
 		}
 		if n == -1 {
@@ -119,10 +122,13 @@ func ReadReply(r *bufio.Reader) (interface{}, error) {
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}
+		if buf[n] != '\r' || buf[n+1] != '\n' {
+			return nil, ErrProtocol
+		}
 		return string(buf[:n]), nil
 	case '*':
 		n, err := strconv.Atoi(line[1:])
-		if err != nil {
+		if err != nil || n < -1 || n > 1<<20 {
 			return nil, ErrProtocol
 		}
 		if n == -1 {
