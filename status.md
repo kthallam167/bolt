@@ -45,10 +45,15 @@
 - **Fix**: Added `closed bool` protection inside `Close()` to safely guard channel closure and file operations.
 - **Test**: Added `TestAOFDoubleCloseSafe` in `internal/aof/aof_test.go`.
 
+### Bug Fix 5: CI `gofmt` Formatting Compliance
+- **Issue**: GitHub Actions CI workflow failed during the `gofmt` step (`gofmt -l .`) due to unformatted test files.
+- **Fix**: Ran `gofmt -w .` across the repository to enforce standard formatting.
+
 ---
 
 ## 3. Verification & Test Metrics
 
+- **`gofmt -l .`**: 0 unformatted files (CI step passing).
 - **`go vet ./...`**: 0 warnings / errors.
 - **Build Status (`make build`)**:
   - `bin/bolt-server`: Compiled cleanly
